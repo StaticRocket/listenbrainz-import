@@ -21,9 +21,10 @@
 
 import json
 import logging
+from logging import Logger
 import ssl
 import time
-from http.client import HTTPSConnection
+from http.client import HTTPSConnection, HTTPResponse
 
 HOST_NAME = "api.listenbrainz.org"
 PATH_SUBMIT = "/1/submit-listens"
@@ -36,8 +37,14 @@ class Track:
 
     See https://listenbrainz.readthedocs.io/en/latest/dev/json.html
     """
-    def __init__(self, artist_name, track_name,
-                 release_name=None, additional_info={}):
+
+    def __init__(
+        self,
+        artist_name: str,
+        track_name: str,
+        release_name: str | None = None,
+        additional_info: dict | None = None,
+    ):
         """
         Create a new Track instance
         @param artist_name as str
@@ -50,29 +57,39 @@ class Track:
         self.release_name = release_name
         self.additional_info = additional_info
 
-    @staticmethod
-    def from_dict(data):
+    @classmethod
+    def from_dict(cls, data: dict) -> "Track":
+        """
+        Return a Track equivalent of the given dictionary
+        """
         return Track(
             data["artist_name"],
             data["track_name"],
             data.get("release_name", None),
-            data.get("additional_info", {})
+            data.get("additional_info", None),
         )
 
-    def to_dict(self):
-        data = {
+    def to_dict(self) -> dict[str, str | dict]:
+        """
+        Return a dictionary equivalent of the current Track
+        """
+
+        # mandatory data for api
+        data: dict[str, str | dict] = {
             "artist_name": self.artist_name,
             "track_name": self.track_name,
-            "additional_info": self.additional_info
         }
 
+        # optional data that should be dropped if unset
         if self.release_name:
-            data['release_name'] = self.release_name
+            data["release_name"] = self.release_name
+        if self.additional_info:
+            data["additional_info"] = self.additional_info
 
         return data
 
     def __repr__(self):
-        return "Track(%s, %s)" % (self.artist_name, self.track_name)
+        return f"Track({self.artist_name}, {self.track_name})"
 
 
 class ListenBrainzClient:
@@ -82,29 +99,12 @@ class ListenBrainzClient:
     See https://listenbrainz.readthedocs.io/en/latest/dev/api.html
     """
 
-    def __init__(self, logger=logging.getLogger(__name__)):
+    def __init__(self, logger: Logger = logging.getLogger(__name__)):
         self.__next_request_time = 0
         self.user_token = None
         self.logger = logger
 
-    def listen(self, listened_at, track):
-        """
-        Submit a listen for a track
-        @param listened_at as int
-        @param entry as Track
-        """
-        payload = _get_payload(track, listened_at)
-        return self._submit("single", [payload])
-
-    def playing_now(self, track):
-        """
-        Submit a playing now notification for a track
-        @param track as Track
-        """
-        payload = _get_payload(track)
-        return self._submit("playing_now", [payload])
-
-    def import_tracks(self, tracks):
+    def import_tracks(self, tracks: list[tuple[int, "Track"]]) -> HTTPResponse:
         """
         Import a list of tracks as (listened_at, Track) pairs
         @param track as [(int, Track)]
@@ -112,67 +112,73 @@ class ListenBrainzClient:
         payload = _get_payload_many(tracks)
         return self._submit("import", payload)
 
-    def _submit(self, listen_type, payload, retry=0):
+    def _submit(
+        self, listen_type: str, payload: list[dict[str, str | dict]], retry: int = 0
+    ) -> HTTPResponse:
         self._wait_for_ratelimit()
         self.logger.debug("ListenBrainz %s: %r", listen_type, payload)
-        data = {
-            "listen_type": listen_type,
-            "payload": payload
-        }
+        data = {"listen_type": listen_type, "payload": payload}
+
         headers = {
-            "Authorization": "Token %s" % self.user_token,
-            "Content-Type": "application/json"
+            "Authorization": f"Token {self.user_token}",
+            "Content-Type": "application/json",
         }
         body = json.dumps(data)
+
         conn = HTTPSConnection(HOST_NAME, context=SSL_CONTEXT)
         conn.request("POST", PATH_SUBMIT, body, headers)
+
         response = conn.getresponse()
         response_text = response.read()
+
         try:
             response_data = json.loads(response_text)
         except json.decoder.JSONDecodeError:
             response_data = response_text
 
         self._handle_ratelimit(response)
-        log_msg = "Response %s: %r" % (response.status, response_data)
-        if response.status == 429 and retry < 5:  # Too Many Requests
+        log_msg = f"Response {response.status}: {response_data}"
+
+        # too many requests
+        if response.status == 429 and retry < 5:
             self.logger.warning(log_msg)
             return self._submit(listen_type, payload, retry + 1)
-        elif response.status == 200:
+
+        if response.status == 200:
             self.logger.debug(log_msg)
         else:
             self.logger.error(log_msg)
             self.logger.error(payload)
         return response
 
-    def _wait_for_ratelimit(self):
+    def _wait_for_ratelimit(self) -> None:
         now = time.time()
         if self.__next_request_time > now:
             delay = self.__next_request_time - now
             self.logger.debug("Rate limit applies, delay %d", delay)
             time.sleep(delay)
 
-    def _handle_ratelimit(self, response):
+    def _handle_ratelimit(self, response: HTTPResponse) -> None:
         remaining = int(response.getheader("X-RateLimit-Remaining", 0))
         reset_in = int(response.getheader("X-RateLimit-Reset-In", 0))
+
         self.logger.debug("X-RateLimit-Remaining: %i", remaining)
         self.logger.debug("X-RateLimit-Reset-In: %i", reset_in)
+
         if remaining == 0:
-            self.__next_request_time = time.time() + reset_in
+            self.__next_request_time = int(time.time() + reset_in)
 
 
-def _get_payload_many(tracks):
+def _get_payload_many(tracks: list[tuple[int, "Track"]]) -> list[dict]:
     payload = []
-    for (listened_at, track) in tracks:
+    for listened_at, track in tracks:
         data = _get_payload(track, listened_at)
         payload.append(data)
     return payload
 
 
-def _get_payload(track, listened_at=None):
-    data = {
-        "track_metadata": track.to_dict()
-    }
+def _get_payload(track: "Track", listened_at: int | None = None) -> dict:
+    data: dict = {"track_metadata": track.to_dict()}
     if listened_at is not None:
         data["listened_at"] = listened_at
     return data
