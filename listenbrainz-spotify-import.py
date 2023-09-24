@@ -12,7 +12,9 @@ from listenbrainz import ListenBrainzClient, Track
 
 
 def chunks(input_list: list, chunk_size: int) -> Generator:
-    """Yield successive chunk_size-sized chunks from input_list."""
+    """
+    Yield successive chunk_size-sized chunks from input_list.
+    """
     for index in range(0, len(input_list), chunk_size):
         yield input_list[index : index + chunk_size]
 

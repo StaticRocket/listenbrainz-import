@@ -57,6 +57,12 @@ class Track:
         self.release_name = release_name
         self.additional_info = additional_info
 
+        # don't add a duration if it isn't valid
+        if self.additional_info:
+            duration = self.additional_info.pop("duration", 0)
+            if duration > 0:
+                self.additional_info["duration"] = duration
+
     @classmethod
     def from_dict(cls, data: dict) -> "Track":
         """
