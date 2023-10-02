@@ -25,6 +25,7 @@ from logging import Logger
 import ssl
 import time
 from http.client import HTTPSConnection, HTTPResponse
+import requests
 
 HOST_NAME = "api.listenbrainz.org"
 PATH_SUBMIT = "/1/submit-listens"
@@ -44,6 +45,7 @@ class Track:
         track_name: str,
         release_name: str | None = None,
         additional_info: dict | None = None,
+        recording_mbid: str | None = None,
     ):
         """
         Create a new Track instance
@@ -56,6 +58,7 @@ class Track:
         self.track_name = track_name
         self.release_name = release_name
         self.additional_info = additional_info
+        self.recording_mbid = recording_mbid
 
         # don't add a duration if it isn't valid
         if self.additional_info:
@@ -73,6 +76,7 @@ class Track:
             data["track_name"],
             data.get("release_name", None),
             data.get("additional_info", None),
+            data.get("recording_mbid", None),
         )
 
     def to_dict(self) -> dict[str, str | dict]:
@@ -173,6 +177,18 @@ class ListenBrainzClient:
 
         if remaining == 0:
             self.__next_request_time = int(time.time() + reset_in)
+
+    def submit_feedback(self, track, score: int):
+        """ Submit feedback for recording. """
+        recording_mbid = track.recording_mbid
+        response = requests.post(
+            url="https://api.listenbrainz.org/1/feedback/recording-feedback",
+            json={"recording_mbid": recording_mbid, "score": score},
+            headers={"Authorization": f"Token {self.user_token}"}
+        )
+        response.raise_for_status()
+        print("Feedback submitted.")
+
 
 
 def _get_payload_many(tracks: list[tuple[int, "Track"]]) -> list[dict]:
